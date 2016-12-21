@@ -13,6 +13,7 @@ The Efergy Power meters run at 433MHz (in AU) with FSK protocol. Using the DATA_
 * Transmitter Online status (retained message)
 * Transmitter lost packet
 * Power usage in both mA (milliAmps) and Watts
+* Reporting of ESP8266 VCC on startup
 
 
 # Programming the ESP8266 Module

@@ -25,7 +25,7 @@ Required Libraries (add them through the Arduino Libaries Manager)
 
 
 # Configuration
-Once programmed, it will boot up in AP mode. This may take 1-2 minutes upon first boot as the file system is being prepared. You can then connect to the 'EfergyMQTT' access point with passphrase 'TTQMygrefE'. Once connected, browse to a random HTTP website and you will be redirected to the configuration page. Fille out your MQTT server information and the voltage of your power supply and click Save. The ESP will then restart and connect to your configured WiFi and MQTT Server.
+Once programmed, it will boot up in AP mode. This may take 1-2 minutes upon first boot as the file system is being prepared. You can then connect to the 'EfergyMQTT' access point with passphrase 'TTQMygrefE'. Once connected, browse to a random HTTP website and you will be redirected to the configuration page. File out your MQTT server information and the voltage of your power supply and click Save. The ESP will then restart and connect to your configured WiFi and MQTT Server.
 
 To change the configuration the ESP needs to boot without being able to connect to your configured Access Point. Turning off the AP, or disabling the MAC address of the ESP in your AP will allow access to the configuration next time the ESP restarts.
 

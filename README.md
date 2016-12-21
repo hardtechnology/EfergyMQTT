@@ -30,6 +30,8 @@ Once programmed, it will boot up in AP mode. This may take 1-2 minutes upon firs
 
 To change the configuration the ESP needs to boot without being able to connect to your configured Access Point. Turning off the AP, or disabling the MAC address of the ESP in your AP will allow access to the configuration next time the ESP restarts.
 
+NOTE: To see the Debugging output on the Serial port, set your baud rate to 74480 (ESP8266 default Baud Rate).
+
 
 # Hooking it up
 This is designed to run on an Adafruit Huzzah or Wemos D1 mini which will fit inside the battery compartment of the Efergy Receiver unit. Due to the additional power draw of the ESP module, the Efergy receiver will need a 5V power supply. This can be tapped into along with the DATA out of the RF receivier in the unit to operate the ESP8266 module.The DATA Out from the receiver should be hooked up to pin 16 on the ESP8266 module.

@@ -4,9 +4,13 @@ Efergy MQTT is a simple Efergy Data protocol to MQTT IoT code base designed to r
 The Efergy Power meters run at 433MHz (in AU) with FSK protocol. Using the DATA_OUT pad inside the Efergy E2 Classic or Elite Classic Receiver this code will allow you to capture this data and send it to an MQTT server of your choice. It will also output information on the Serial port of the ESP8266 for diagnostics.
 
 # What's Supported
+* Configuration of MQTT Server including username, password
+* MQTT Will Topic for Online status of EfergyMQTT
+* Configuration of WiFi Settings
 * Reporting of Transmitter Battery Status
 * Notification of Transmitters that have their 'Link' button pressed recently
-* Transmitter Online status* Transmitter lost packet
+* Transmitter Online status
+* Transmitter lost packet
 * Power usage in both mA (millAmps) and Watts
 
 # Programming the ESP8266 Module

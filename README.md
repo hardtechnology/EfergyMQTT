@@ -19,6 +19,8 @@ The Efergy Power meters run at 433MHz (in AU) with FSK protocol. Using the DATA_
 # Programming the ESP8266 Module
 This code is creating in the Arudino IDE version 1.6.9. You will need to seperately install the required libraries and your ESP8266 board configuration.
 
+We need the 'ESP8266 Community' boards to be added - follow this: https://learn.sparkfun.com/tutorials/esp8266-thing-hookup-guide/installing-the-esp8266-arduino-addon
+
 Required Libraries (add them through the Arduino Libaries Manager)
 * WiFiManager
 * ArduinoJson

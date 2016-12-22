@@ -30,7 +30,7 @@ Once programmed, it will boot up in AP mode. This may take 1-2 minutes upon firs
 
 To change the configuration the ESP needs to boot without being able to connect to your configured Access Point. Turning off the AP, or disabling the MAC address of the ESP in your AP will allow access to the configuration next time the ESP restarts.
 
-NOTE: To see the Debugging output on the Serial port, set your baud rate to 74480 (ESP8266 default Baud Rate).
+NOTE: To see the Debugging output on the Serial port, set your baud rate to 74880 (ESP8266 default Baud Rate).
 
 
 # Hooking it up

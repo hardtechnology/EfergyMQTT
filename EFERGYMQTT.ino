@@ -22,7 +22,10 @@
 #include "wiring_private.h"       //Required for our version of PulseIn
 #include "pins_arduino.h"         //Required for our version of PulseIn
 
+#define VERSION 7.1
+
 #define DEBUG 0
+#define MQTT_Publish_mA 0
 
 //MQTT Server Variables - including any defaults - redefined later - so update in both locations
 char mqtt_server[40];
@@ -32,6 +35,9 @@ char mqtt_password[40] = "";
 char mqtt_clientname[40] = "EfergyMQTT";
 char mqtt_willtopic[40] = "EfergyMQTT/Online";
 char efergy_voltage[5] = "230"; //Set default Voltage for our Wattage measurements
+
+char buf1[40]; //Temporary buffers for charactor concatenating, etc...
+char buf2[40]; //Temporary buffers for charactor concatenating, etc...
 
 //Enable us to get the VCC using  ESP.getVcc() 
 ADC_MODE(ADC_VCC);
@@ -54,7 +60,7 @@ void saveConfigCallback () {
 
 #define in 16          //Input pin (DATA_OUT from A72C01) on pin 2 (D3)
 //#define LED 13         //Output for Rx LED on ping 3 (D4)
-#define MAXTX 16       //Max Transmitters we can handle (Array size) - each additional tranmitter needs 6 bytes of RAM
+#define MAXTX 32       //Max Transmitters we can handle (Array size) - each additional tranmitter needs 6 bytes of RAM
 #define limit 67      //67 for E2 Classic - bits to Rx from Tx
 #define fullupdatepkt 300 //Number of packets between full updates - 600 = 60 mins @ 6s
 
@@ -75,7 +81,8 @@ int dbit;
 boolean flag;
 boolean MQTTloopreturn; //Use to capture the return of the MQTT PubSubClient loop routine
 int looping;
-
+int VCC_V;
+int VCC_mV;
 unsigned long offlineupdate;       //Millis counter for status update
 unsigned long milliamps;           //Calculated current in mA - currently being processed
 unsigned long watts;                //Calculated power in Watts - currently being processed
@@ -86,7 +93,7 @@ unsigned long TX_age[MAXTX];       //milliseconds when last updated (stores mill
 unsigned char TX_battery[MAXTX];         //Status of the Transmitter Batteries
 unsigned int TX_update[MAXTX];         //Run full update every X packets received
 unsigned int TX_link[MAXTX];         //Link Bit reference
-
+unsigned int TX_lost[MAXTX];        //Number of packets lost to trigger OFFLINE
 unsigned long MQTT_retry = 0;       //Stores time between MQTT reconnections
 bool MQTT_Connected = false;
 
@@ -187,8 +194,8 @@ void setup() {
   WiFiManagerParameter custom_efergy_voltage("Voltage", "efergy voltage", efergy_voltage, 4);
   
   Serial.print("ESP8266 VCC:      ");
-  int VCC_V = ESP.getVcc() / 1000;
-  int VCC_mV = ESP.getVcc() - (VCC_V * 1000);
+  VCC_V = ESP.getVcc() / 1000;
+  VCC_mV = ESP.getVcc() - (VCC_V * 1000);
   Serial.print(VCC_V);
   Serial.print(".");
   Serial.print(VCC_mV);
@@ -226,7 +233,7 @@ void setup() {
   wifiManager.setMinimumSignalQuality(20);
   
   //sets timeout until configuration portal gets turned off useful to make it all retry or go to sleep in seconds
-  //wifiManager.setTimeout(120);
+  wifiManager.setTimeout(300);
 
   //fetches ssid and pass and tries to connect
   //if it does not connect it starts an access point with the specified name
@@ -359,23 +366,24 @@ void loop() {
       flag = false;
       TransmitterID = (((unsigned int)bytearray[1] * 256) + (unsigned int)bytearray[2]); //Make 16-bit Transmitter ID
       //Transmitter update JSON
-      TXarrayID = GetTXarrayID(TransmitterID); //Get our Array ID for the Transmitter
+      TXarrayID = GetTXarrayID(TransmitterID,bytearray[0]); //Get our Array ID for the Transmitter
       if (TXarrayID) {
         TX_update[TXarrayID]++;
         if (TX_update[TXarrayID] > fullupdatepkt) {
           TX_update[TXarrayID] = 0;
         }
         TX_age[TXarrayID] = millis();
+        TX_lost[TXarrayID] = 0;
         milliamps = ((1000 * ((unsigned long)((bytearray[4] * 256) + (unsigned long)bytearray[5]))) / power2(bytearray[6]));
         watts = ( milliamps * atoi(efergy_voltage) ) / 1000;
         Serial.print(F("{\"TX\":"));
         Serial.print(TransmitterID);
         Serial.print(F(",\"W\":"));
         Serial.print(watts);
-        Serial.print(F(",\"mA\":"));
-        Serial.print(milliamps);
-        MQTT_Pub("mA",milliamps);
-        MQTT_Pub("Watt", watts);
+        if (MQTT_Publish_mA) {
+          Serial.print(F(",\"mA\":"));
+          Serial.print(milliamps);
+        }
         if ( watts > 25000 || milliamps > 100000 ) { //If our calculations are out of normal boundaries - log the full data
           MQTT_RAW(bytearray);
         }
@@ -398,9 +406,12 @@ void loop() {
         }
         //Print out if the locate(LINK) bit is set on the transmitter - include Interval
         if ( (bytearray[3] & 0x80) == 0x80 && TX_link[TXarrayID] == false) {
-          char buf[8];
-          sprintf(buf,"%lu",TransmitterID);
-          if ( MQTT_Connected == true ) { MQTTclient.publish("Efergy/Link",buf,true); }
+          Serial.print(F(",\"LINK\":1"));
+          if ( MQTT_Connected == true ) {
+            sprintf(buf1,"%s/Link",mqtt_clientname);
+            sprintf(buf2,"%lu",TransmitterID);
+            MQTTclient.publish(buf1,buf2,true);
+          }
           TX_link[TXarrayID] = true;
         } else if ( (bytearray[3] & 0x80) == 0x00 ) {
           TX_link[TXarrayID] = false;
@@ -426,7 +437,12 @@ void loop() {
         
         //End of JSON Update string
         Serial.println("}");
+        
+        //Publish Standard MQTT Updates
+        if (MQTT_Publish_mA) {MQTT_Pub("mA",milliamps); }
+        MQTT_Pub("Watt", watts);
 
+        
       } else {
         //Invalid Transmitter ID - most likely we are overloaded
         if (DEBUG){Serial.print("INVID");}
@@ -457,7 +473,7 @@ void loop() {
         i = 1;
         while ( i < MAXTX ) {
           if (TX_id[i] > 0 ) {
-            if ( (  TX_age[i] + ( (unsigned long)TX_interval[i] * 3020 ) ) < millis() ) {  //If we miss 3 transmittions - mark offline
+            if ( TX_lost[i] > 3 ) {  //If we miss 3 transmittions - mark offline
               Serial.print(F("{\"OFF\":"));
               Serial.print(TX_id[i]);
               Serial.println("}");
@@ -465,7 +481,7 @@ void loop() {
               TX_id[i] = 0;
               MQTT_Pub("Online",false); //Mark Transmitter as offline
               MQTT_Pub("Watt","");      //Clear Retained message
-              MQTT_Pub("mA","");        //Clear Retained message
+              if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
               MQTT_Pub("Interval","");  //Clear Retained message
             }
           }
@@ -480,16 +496,19 @@ void loop() {
         if (TX_id[i] > 0 ) {   
           if ( (  TX_age[i] + ( (unsigned long)TX_interval[i] * 1010 ) ) < millis() ) {  //If we miss 1 transmission note it
             TransmitterID = TX_id[i];
-            Serial.print(F("{\"LOST\":"));
-            Serial.print(TransmitterID);
-            Serial.println("}");
             TX_age[i] = millis();
+            TX_lost[i]++;
+            Serial.print(F("{\"TX\":"));
+            Serial.print(TransmitterID);
+            Serial.print(",\"LOST\":");
+            Serial.print(TX_lost[i]);
+            Serial.println("}");
             MQTT_Pub("Watt","");      //Clear Retained message
-            MQTT_Pub("mA","");        //Clear Retained message
+            if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
           }
         }
         i++;
-      }  
+      }
       //End of Lost packet routine    
       
       //Keep connection to MQTT Server
@@ -517,7 +536,7 @@ unsigned long power2 (unsigned char exp1) {
 
 
 //Lookup Transmitter ID in our array, or create one if new
-unsigned int GetTXarrayID(unsigned long TransmitterID) {
+unsigned int GetTXarrayID(unsigned long TransmitterID, unsigned char TXtype) {
   unsigned int w = 1;
   unsigned int ID = 0;
   while ( ID == 0 && w < MAXTX ) {
@@ -533,11 +552,15 @@ unsigned int GetTXarrayID(unsigned long TransmitterID) {
         TX_age[w] = millis();
         TX_battery[w] = 0;
         TX_update[w] = 0;
+        TX_lost[w] = 0;
         TX_link[w] = false;
         Serial.print(F("{\"NEW\":"));
         Serial.print(TransmitterID);
+        Serial.print(",\"TYPE\":");
+        Serial.print(TXtype);
         Serial.println("}");
         MQTT_Pub("Online",true);
+        MQTT_Pub("Type",TXtype);
       }
       w++;
     }
@@ -644,12 +667,20 @@ void mqtt_pubsubclient_reconnect() {
         MQTT_Connected = true;
         RESET_TX_DB();
         Serial.println("{\"MQTT\":\"CONNECTED\"}");
+        
         MQTTclient.publish(mqtt_willtopic,"true");    // Once connected, publish an announcement...
         MQTTclient.loop();
         yield();
-        //MQTTclient.publish(mqtt_clientname/Voltage,efergy_voltage);
-        //MQTTclient.loop();
-        //yield();
+        char buf1[40];
+        char buf2[40];
+        sprintf(buf1,"%s/Voltage",mqtt_clientname);
+        MQTTclient.publish(buf1,efergy_voltage);
+        MQTTclient.loop();
+        sprintf(buf1,"%s/ESP8266_VCC",mqtt_clientname);
+        sprintf(buf2,"%d.%d",VCC_V,VCC_mV);
+        MQTTclient.publish(buf1,buf2);
+        MQTTclient.loop();
+        yield();
         MQTTclient.subscribe(mqtt_clientname);
         MQTTclient.loop();
         yield();

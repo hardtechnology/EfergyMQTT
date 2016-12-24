@@ -37,3 +37,25 @@ NOTE: To see the Debugging output on the Serial port, set your baud rate to 7488
 
 # Hooking it up
 This is designed to run on an Adafruit Huzzah or Wemos D1 mini which will fit inside the battery compartment of the Efergy Receiver unit. Due to the additional power draw of the ESP module, the Efergy receiver will need a 5V power supply. This can be tapped into along with the DATA out of the RF receivier in the unit to operate the ESP8266 module.The DATA Out from the receiver should be hooked up to pin 16 on the ESP8266 module.
+
+# Controlling
+The following MQTT Topics can be used to control the module:
+
+%MQTTClientname%/CONFIG/RESET
+* Value: 'RESET' - will restart the ESP8266 module
+* Value: 'CONFIG' - will restart and launch the configuration AP Mode
+
+%MQTTClientname%/CONFIG/VCC
+* Value: n/a - will reply on %MQTTClientname%/VCC with the current VCC Voltage
+
+%MQTTClientname%/CONFIG/EFERGYVOLTAGE
+* Value: <volts> - will set the voltage used for Wattage calculations
+* NOTE: The configured value set in config mode will re-apply after a restart
+
+%MQTTClientname%/CONFIG/MILLIAMP
+* Value: 0/1 - Enable or disable the MilliAmp output
+* NOTE: The configured value set in config mode will re-apply after a restart
+
+%MQTTClientname%/CONFIG/VERSION
+* Value: n/a - will reply on %MQTTClientname%/VERSION with the current Software Voltage
+

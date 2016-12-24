@@ -10,6 +10,7 @@
 //  ArduinoJson
 //  PubsubClient
 
+
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
 #include <DNSServer.h>
@@ -22,20 +23,21 @@
 #include "wiring_private.h"       //Required for our version of PulseIn
 #include "pins_arduino.h"         //Required for our version of PulseIn
 
-#define VERSION 7.1
+#define VERSION_MAJOR 7
+#define VERSION_MINOR 2
 
 #define DEBUG 0
-#define MQTT_Publish_mA 0
+bool MQTT_Publish_mA = false;
 
 //MQTT Server Variables - including any defaults - redefined later - so update in both locations
-char mqtt_server[40];
-char mqtt_port[6] = "1883";
-char mqtt_username[40] = "";
-char mqtt_password[40] = "";
-char mqtt_clientname[40] = "EfergyMQTT";
-char mqtt_willtopic[40] = "EfergyMQTT/Online";
-char efergy_voltage[5] = "230"; //Set default Voltage for our Wattage measurements
-
+char mqtt_server[60];
+char mqtt_port[8] = "1883";
+char mqtt_username[60] = "";
+char mqtt_password[60] = "";
+char mqtt_clientname[60] = "EfergyMQTT";
+char mqtt_willtopic[60] = "EfergyMQTT/Online";
+char efergy_voltage[8] = "230"; //Set default Voltage for our Wattage measurements
+int efergy_voltage_int = atoi(efergy_voltage);
 char buf1[40]; //Temporary buffers for charactor concatenating, etc...
 char buf2[40]; //Temporary buffers for charactor concatenating, etc...
 
@@ -96,6 +98,7 @@ unsigned int TX_link[MAXTX];         //Link Bit reference
 unsigned int TX_lost[MAXTX];        //Number of packets lost to trigger OFFLINE
 unsigned long MQTT_retry = 0;       //Stores time between MQTT reconnections
 bool MQTT_Connected = false;
+char mqtt_subscribe_buff[100];
 
 //unsigned long bitTimer;
 
@@ -164,9 +167,11 @@ void setup() {
             Serial.print("************");
             Serial.println("");
           }
-          Serial.print("Using ");
-          Serial.print(efergy_voltage);
-          Serial.println("V for Wattage Calculations");
+          //JSON to Serial for Voltage
+          Serial.print("{\"VOLTAGE\":");
+          Serial.print(efergy_voltage_int);
+          Serial.println("}");
+
           
         } else {
           Serial.println("failed to load json config");
@@ -243,7 +248,7 @@ void setup() {
     Serial.println("failed to connect and hit timeout");
     delay(3000);
     //reset and try again, or maybe put it to deep sleep
-    ESP.reset();
+    ESP.restart();
     delay(5000);
   }
 
@@ -255,6 +260,7 @@ void setup() {
   strcpy(mqtt_clientname, custom_mqtt_clientname.getValue());
   strcpy(mqtt_willtopic, custom_mqtt_willtopic.getValue());
   strcpy(efergy_voltage, custom_efergy_voltage.getValue());
+  efergy_voltage_int = atoi(efergy_voltage);
   
   //save the custom parameters to FS
   if (shouldSaveConfig) {
@@ -281,7 +287,7 @@ void setup() {
     //end save
     Serial.println("Rebooting. Please Wait...");
     delay(500);
-    ESP.reset();
+    ESP.restart();
     delay(500); //We should NEVER get here
     Serial.println("REBOOT FAILED");
   }
@@ -312,7 +318,7 @@ void loop() {
       if ( processingTime == 0 ) { //With An Active Signal we will basically never timeout
         if (DEBUG){Serial.print("T");}
         if (DEBUG){prevlength = p;} //Store this packet length in prevlength for debugging
-        looping = looping + 80;
+        looping = looping + 200;
         RESET_PKT(); 
       } else if ( processingTime > 480UL ) { //Start of new packet
         incomingTime[0] = processingTime;
@@ -375,7 +381,7 @@ void loop() {
         TX_age[TXarrayID] = millis();
         TX_lost[TXarrayID] = 0;
         milliamps = ((1000 * ((unsigned long)((bytearray[4] * 256) + (unsigned long)bytearray[5]))) / power2(bytearray[6]));
-        watts = ( milliamps * atoi(efergy_voltage) ) / 1000;
+        watts = ( milliamps * efergy_voltage_int ) / 1000;
         Serial.print(F("{\"TX\":"));
         Serial.print(TransmitterID);
         Serial.print(F(",\"W\":"));
@@ -473,7 +479,7 @@ void loop() {
         i = 1;
         while ( i < MAXTX ) {
           if (TX_id[i] > 0 ) {
-            if ( TX_lost[i] > 3 ) {  //If we miss 3 transmittions - mark offline
+            if ( TX_lost[i] >= 3 ) {  //If we miss 3 transmittions - mark offline
               Serial.print(F("{\"OFF\":"));
               Serial.print(TX_id[i]);
               Serial.println("}");
@@ -671,8 +677,6 @@ void mqtt_pubsubclient_reconnect() {
         MQTTclient.publish(mqtt_willtopic,"true");    // Once connected, publish an announcement...
         MQTTclient.loop();
         yield();
-        char buf1[40];
-        char buf2[40];
         sprintf(buf1,"%s/Voltage",mqtt_clientname);
         MQTTclient.publish(buf1,efergy_voltage);
         MQTTclient.loop();
@@ -681,7 +685,8 @@ void mqtt_pubsubclient_reconnect() {
         MQTTclient.publish(buf1,buf2);
         MQTTclient.loop();
         yield();
-        MQTTclient.subscribe(mqtt_clientname);
+        sprintf(buf1,"%s/CONFIG/#",mqtt_clientname);
+        MQTTclient.subscribe(buf1);
         MQTTclient.loop();
         yield();
       } else {
@@ -717,40 +722,94 @@ void RESET_TX_DB() {
 }
 
 
+#define MQTT_Pub_VERSION() \
+    sprintf(buf1,"%s/VERSION",mqtt_clientname); \
+    sprintf(buf2,"%d.%d",VERSION_MAJOR,VERSION_MINOR); \
+    MQTTclient.publish(buf1,buf2); \
+    MQTTclient.loop(); \
+  
+
 
 // Callback function
 void callback(char* topic, byte* payload, unsigned int length) {
-  // In order to republish this payload, a copy must be made
-  // as the orignal payload buffer will be overwritten whilst
-  // constructing the PUBLISH packet.
-
-  // Allocate the correct amount of memory for the payload copy
-  byte* p = (byte*)malloc(length);
-  memcpy(p,payload,length);
-  // Copy the payload to the new buffer
-  Serial.print("Received MQTT Message:");
-  int i = 0;
-  //while ((char)payload[i] != 0 && i < length ) {
-  while ( i < length ) {
-    Serial.print((char)payload[i]);
-    i++;
+  //Convert Payload to Null terminated Array read to convert to String
+  memset (mqtt_subscribe_buff, 0, sizeof(mqtt_subscribe_buff));
+  for(int i=0; i<length; i++) {
+    mqtt_subscribe_buff[i] = payload[i];
   }
-  Serial.println("");
+  mqtt_subscribe_buff[i] = '\0';  
+  String mqttSubValue = String(mqtt_subscribe_buff);
+
+  Serial.print("{\"MQTT_SUB\":\"");
+  Serial.print(topic);
+  Serial.print("\",\"VALUE\":\"");
+  Serial.print(mqttSubValue);
+  Serial.println("\"}");
+
+  //RESET TOPIC
+  sprintf(buf1,"%s/CONFIG/%s",mqtt_clientname,"RESET");
+  if ( strcmp(topic,buf1) == 0 ) {
+    if ( strcmp(mqtt_subscribe_buff,"CONFIG") == 0 ) { //RESET Configuration so we restart into Access Point Config mode
+      WiFiManager wifiManager;
+      wifiManager.resetSettings();
+      delay(500);
+      Serial.println("Resetting...");
+      delay(500);
+      ESP.restart();
+      delay(500);
+    }
+    if ( strcmp(topic,buf1) == 0 && strcmp(mqtt_subscribe_buff,"RESTART") == 0 ) {
+      Serial.println("Resetting...");
+      delay(500);
+      ESP.restart();
+      delay(500);
+    }
+  }
   
-  //if ( strcmp(*p,"RESET") == 0 ) {
-  if ( 1 ) {
-    WiFiManager wifiManager;
-    wifiManager.resetSettings();
-    delay(500);
-    Serial.println("Resetting...");
-    delay(500);
-    ESP.reset();
+  //VCC TOPIC
+  sprintf(buf1,"%s/CONFIG/%s",mqtt_clientname,"VCC");
+  if ( strcmp(topic,buf1) == 0 ) {
+    VCC_V = ESP.getVcc() / 1000;
+    VCC_mV = ESP.getVcc() - (VCC_V * 1000);
+    sprintf(buf1,"%s/VCC",mqtt_clientname);
+    sprintf(buf2,"%d.%d",VCC_V,VCC_mV);
+    MQTTclient.publish(buf1,buf2);
+    MQTTclient.loop();
+  }
+  
+  //SET Voltage
+  sprintf(buf1,"%s/CONFIG/%s",mqtt_clientname,"EFERGYVOLTAGE");
+  if ( strcmp(topic,buf1) == 0 ) {
+    int newvoltage = atoi(mqtt_subscribe_buff);
+    if (newvoltage > 5 && newvoltage < 999 ) {
+      efergy_voltage_int = newvoltage;
+      Serial.print("{\"VOLTAGE\":");
+      Serial.print(efergy_voltage_int);
+      Serial.println("}");
+    }
   }
 
-  // Free the memory
-  free(p);
-}
+  //SET mA output true/false
+  sprintf(buf1,"%s/CONFIG/%s",mqtt_clientname,"MILLIAMP");
+  if ( strcmp(topic,buf1) == 0 ) {
+    Serial.print("OUTPUT: MilliAmps");
+    if ( atoi(mqtt_subscribe_buff)  ) {
+      MQTT_Publish_mA = true;
+      Serial.println(" Enabled");
+    } else {
+      MQTT_Publish_mA = false;      
+      Serial.println(" Disabled");
+    }
+  }
 
+  //GET Software Version
+  sprintf(buf1,"%s/CONFIG/VERSION",mqtt_clientname);
+  if ( strcmp(topic,buf1) == 0 ) {
+    MQTT_Pub_VERSION();
+  }
+  
+  yield(); 
+}
 
 #define RSR_CCOUNT(r)     __asm__ __volatile__("rsr %0,ccount":"=a" (r))
 static inline uint32_t get_ccount(void)
@@ -762,6 +821,8 @@ static inline uint32_t get_ccount(void)
 
 #define EFERGY_PINWAIT(state) \
     while (digitalRead(pin) != (state)) { if (get_ccount() - start_cycle_count > timeout_cycles) { return 0; } }
+
+    
 
 // max timeout is 27 seconds at 160MHz clock and 54 seconds at 80MHz clock
 unsigned long Efergy_pulseIn(uint8_t pin, uint8_t state, unsigned long timeout)

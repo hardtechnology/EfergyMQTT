@@ -5,11 +5,10 @@
 //http://electrohome.pbworks.com/w/page/34379858/Efergy%20Elite%20Wireless%20Meter%20Hack
 
 //This requires the following Libraries to be installed (see includes for links)
-//  ESP8266
-//  WiFiManager
-//  ArduinoJson
-//  PubsubClient
-
+// ArduinoJSON 5.8.0
+// ESP8266 1.0.0
+// WiFiManager 0.12.0
+// PubSubClient 2.6.0
 
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
@@ -24,10 +23,11 @@
 #include "pins_arduino.h"         //Required for our version of PulseIn
 
 #define VERSION_MAJOR 7
-#define VERSION_MINOR 2
+#define VERSION_MINOR 5
 
 #define DEBUG 0
 bool MQTT_Publish_mA = false;
+bool MQTT_Publish_LOST = false;
 
 //MQTT Server Variables - including any defaults - redefined later - so update in both locations
 char mqtt_server[60];
@@ -36,6 +36,9 @@ char mqtt_username[60] = "";
 char mqtt_password[60] = "";
 char mqtt_clientname[60] = "EfergyMQTT";
 char mqtt_willtopic[60] = "EfergyMQTT/Online";
+char mqtt_efergytopic[60] = "EfergyMQTT";
+char efergy_blacklist[128] = "{\"blacklist\":[]}";
+char efergy_whitelist[128] = "{\"whitelist\":[]}";
 char efergy_voltage[8] = "230"; //Set default Voltage for our Wattage measurements
 int efergy_voltage_int = atoi(efergy_voltage);
 char buf1[40]; //Temporary buffers for charactor concatenating, etc...
@@ -60,11 +63,10 @@ void saveConfigCallback () {
   shouldSaveConfig = true;
 }
 
-#define in 16          //Input pin (DATA_OUT from A72C01) on pin 2 (D3)
-//#define LED 13         //Output for Rx LED on ping 3 (D4)
+#define in 16          //Input pin (DATA_OUT from A72C01) on pin 2 (D3) (Pin D0 on the Wemos D1 mini)
 #define MAXTX 32       //Max Transmitters we can handle (Array size) - each additional tranmitter needs 6 bytes of RAM
 #define limit 67      //67 for E2 Classic - bits to Rx from Tx
-#define fullupdatepkt 300 //Number of packets between full updates - 600 = 60 mins @ 6s
+#define fullupdatepkt 600 //Number of packets between full updates - 600 = 60 mins @ 6s
 
 int p = 0;
 int i = 0;
@@ -75,7 +77,7 @@ unsigned long processingTime;    //needs to be unsigned long to be compatible wi
 unsigned long incomingTime[limit]; //stores processing time for each bit
 unsigned char bytedata;
 unsigned long packetTO;           //Packet timeout
-char tbyte = 0; //Used for storing the checksum
+char tbyte = 0;                   //Used for storing the checksum
 unsigned int TXarrayID;
 int bitpos;
 int bytecount; //Number of Bytes processed
@@ -87,16 +89,16 @@ int VCC_V;
 int VCC_mV;
 unsigned long offlineupdate;       //Millis counter for status update
 unsigned long milliamps;           //Calculated current in mA - currently being processed
-unsigned long watts;                //Calculated power in Watts - currently being processed
+unsigned long watts;               //Calculated power in Watts - currently being processed
 unsigned long TransmitterID;       //Identifier for the Transmitter - currently being processed
-unsigned long TX_id[MAXTX];         //unsigned int - Transmitter array ID
-unsigned int TX_interval[MAXTX];         //unsigned int - Transmitter array ID - used to calc offline length
+unsigned long TX_id[MAXTX];        //unsigned int - Transmitter array ID
+unsigned int TX_interval[MAXTX];   //unsigned int - Transmitter array ID - used to calc offline length
 unsigned long TX_age[MAXTX];       //milliseconds when last updated (stores millis()) - used for offline check
-unsigned char TX_battery[MAXTX];         //Status of the Transmitter Batteries
-unsigned int TX_update[MAXTX];         //Run full update every X packets received
-unsigned int TX_link[MAXTX];         //Link Bit reference
-unsigned int TX_lost[MAXTX];        //Number of packets lost to trigger OFFLINE
-unsigned long MQTT_retry = 0;       //Stores time between MQTT reconnections
+unsigned char TX_battery[MAXTX];   //Status of the Transmitter Batteries
+unsigned int TX_update[MAXTX];     //Run full update every X packets received
+unsigned int TX_link[MAXTX];       //Link Bit reference
+unsigned int TX_lost[MAXTX];       //Number of packets lost to trigger OFFLINE
+unsigned long MQTT_retry = 0;      //Stores time between MQTT reconnections
 bool MQTT_Connected = false;
 char mqtt_subscribe_buff[100];
 
@@ -109,7 +111,7 @@ void setup() {
   
   //This ensures our serial has had time to get ready  
   yield();
-  delay(100);
+  delay(200);
   
   Serial.println("\nBOOTING Please Wait...");
 
@@ -118,7 +120,7 @@ void setup() {
 
   //read configuration from FS json
   Serial.print("Mounting FS...");
-  delay(10);
+  delay(50);
 
   if (SPIFFS.begin()) {
     Serial.println("Done.");
@@ -136,33 +138,37 @@ void setup() {
         JsonObject& json = jsonBuffer.parseObject(buf.get()); //Decode the config file into JSON config
         if (json.success()) {
           Serial.println("JSON Read OK.");
-          if (DEBUG) { json.printTo(Serial);}
-          strcpy(mqtt_server, json["mqtt_server"]); //Copy our parameters into arrays
-          strcpy(mqtt_port, json["mqtt_port"]);
-          strcpy(mqtt_username, json["mqtt_username"]);
-          strcpy(mqtt_password, json["mqtt_password"]);
-          strcpy(mqtt_clientname, json["mqtt_clientname"]);
-          strcpy(mqtt_willtopic, json["mqtt_willtopic"]);
-          strcpy(efergy_voltage, json["efergy_voltage"]);
+          if (DEBUG) { json.printTo(Serial); Serial.println(""); }
+          //Copy our parameters into arrays
+          if (json.containsKey("mqtt_server")) { strcpy(mqtt_server, json["mqtt_server"]); }
+          if (json.containsKey("mqtt_port")) { strcpy(mqtt_port, json["mqtt_port"]); }
+          if (json.containsKey("mqtt_username")) { strcpy(mqtt_username, json["mqtt_username"]); }
+          if (json.containsKey("mqtt_password")) { strcpy(mqtt_password, json["mqtt_password"]); }
+          if (json.containsKey("mqtt_clientname")) { strcpy(mqtt_clientname, json["mqtt_clientname"]); }
+          if (json.containsKey("mqtt_willtopic")) { strcpy(mqtt_willtopic, json["mqtt_willtopic"]); }
+          if (json.containsKey("mqtt_efergytopic")) { strcpy(mqtt_efergytopic, json["mqtt_efergytopic"]); }
+          if (json.containsKey("efergy_voltage")) { strcpy(efergy_voltage, json["efergy_voltage"]); }
+          efergy_voltage_int = atoi(efergy_voltage);
           
-          //Ensure Basic required parameters are set to defaults
-          if ( strlen(mqtt_clientname) < 2 ) { strcpy(mqtt_clientname, "EfergyMQTT"); } //Set Default Client name
-          if ( strlen(mqtt_port) < 2 ) { strcpy(mqtt_port,"1833"); } //Set Default MQTT port
-          if ( strlen(mqtt_willtopic) < 2 ) { strcpy(mqtt_willtopic,"EfergyMQTT/Online"); } 
-          if ( strlen(efergy_voltage) < 1 ) { strcpy(efergy_voltage,"230"); } 
+          if ( efergy_voltage_int < 5 || efergy_voltage_int > 1000 ) { //Set Default Voltage if out of range
+            strcpy(efergy_voltage,"230");
+            if (DEBUG) { Serial.println("!!!Setting Default Voltage - range out of bounds"); }
+          }
           //Display Configured Settings on our Serial Port
-          Serial.print("MQTT Server:      ");
+          Serial.print("MQTT Server:        ");
           Serial.println(mqtt_server);
-          Serial.print("MQTT Port:        ");
+          Serial.print("MQTT Port:          ");
           Serial.println(mqtt_port);
-          Serial.print("MQTT Will Topic : ");
-          Serial.println(mqtt_willtopic);
-          Serial.print("MQTT Client Name: ");
+          Serial.print("MQTT Client Name:   ");
           Serial.println(mqtt_clientname);
+          Serial.print("MQTT Will Topic :   ");
+          Serial.println(mqtt_willtopic);
+          Serial.print("MQTT Efergy Topic : ");
+          Serial.println(mqtt_efergytopic);
           if ( strlen(mqtt_username) > 0 ) {
-            Serial.print("MQTT Username:    ");
+            Serial.print("MQTT Username:      ");
             Serial.println(mqtt_username);
-            Serial.print("MQTT Password:    ");
+            Serial.print("MQTT Password:      ");
             //for (int pw=0;pw<strlen(mqtt_password);pw++) { Serial.print("*"); } //Indicate number of characters in password
             Serial.print("************");
             Serial.println("");
@@ -185,20 +191,18 @@ void setup() {
   }
   //end read
 
-  // The extra parameters to be configured (can be either global or just in the setup)
-  // After connecting, parameter.getValue() will get you the configured value
-  // id/name placeholder/prompt default length
-  WiFiManagerParameter custom_text_MQTT1("MQTT Server Configuration<br>");
-  WiFiManagerParameter custom_mqtt_server("Server", "mqtt server", mqtt_server, 40);
-  WiFiManagerParameter custom_mqtt_port("Port", "mqtt port", mqtt_port, 5);
-  WiFiManagerParameter custom_mqtt_username("Username", "mqtt username", mqtt_username, 40);
-  WiFiManagerParameter custom_mqtt_password("Password", "mqtt password", mqtt_password, 40);
-  WiFiManagerParameter custom_mqtt_clientname("Client Name", "mqtt clientname", mqtt_clientname, 40);
-  WiFiManagerParameter custom_mqtt_willtopic("Will Topic", "mqtt willtopic", mqtt_willtopic, 40);
+    WiFiManagerParameter custom_text_MQTT1("MQTT Server Configuration<br>");
+  WiFiManagerParameter custom_mqtt_server("Server", "mqtt server", mqtt_server, sizeof(mqtt_server));
+  WiFiManagerParameter custom_mqtt_port("Port", "mqtt port", mqtt_port, sizeof(mqtt_port));
+  WiFiManagerParameter custom_mqtt_username("Username", "mqtt username", mqtt_username, sizeof(mqtt_username));
+  WiFiManagerParameter custom_mqtt_password("Password", "mqtt password", mqtt_password, sizeof(mqtt_password));
+  WiFiManagerParameter custom_mqtt_clientname("ClientName", "mqtt clientname", mqtt_clientname, sizeof(mqtt_clientname));
+  WiFiManagerParameter custom_mqtt_willtopic("WillTopic", "mqtt willtopic", mqtt_willtopic, sizeof(mqtt_willtopic));
+  WiFiManagerParameter custom_mqtt_efergytopic("EfergyTopic", "mqtt efergytopic", mqtt_efergytopic, sizeof(mqtt_efergytopic));
   WiFiManagerParameter custom_text_EFERGY1("<br>Efergy Configuration<br>");
-  WiFiManagerParameter custom_efergy_voltage("Voltage", "efergy voltage", efergy_voltage, 4);
+  WiFiManagerParameter custom_efergy_voltage("Voltage", "efergy voltage", efergy_voltage, sizeof(efergy_voltage));
   
-  Serial.print("ESP8266 VCC:      ");
+  Serial.print("ESP8266 VCC:");
   VCC_V = ESP.getVcc() / 1000;
   VCC_mV = ESP.getVcc() - (VCC_V * 1000);
   Serial.print(VCC_V);
@@ -206,16 +210,9 @@ void setup() {
   Serial.print(VCC_mV);
   Serial.println("V");
   
-  
-
   Serial.println("Starting WifiManager...");
-  
-  //WiFiManager
-  //Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wifiManager;
-
-  //set config save notify callback
-  wifiManager.setSaveConfigCallback(saveConfigCallback);
+  wifiManager.setSaveConfigCallback(saveConfigCallback);  //set config save notify callback
 
   //Set Custom Parameters
   wifiManager.addParameter(&custom_text_MQTT1);
@@ -225,17 +222,15 @@ void setup() {
   wifiManager.addParameter(&custom_mqtt_password);
   wifiManager.addParameter(&custom_mqtt_clientname);
   wifiManager.addParameter(&custom_mqtt_willtopic);
+  wifiManager.addParameter(&custom_mqtt_efergytopic);
   wifiManager.addParameter(&custom_text_EFERGY1);
   wifiManager.addParameter(&custom_efergy_voltage);
 
   //set static ip
   //wifiManager.setSTAStaticIPConfig(IPAddress(10,0,1,99), IPAddress(10,0,1,1), IPAddress(255,255,255,0));
   
-  //reset settings - for testing
-  //wifiManager.resetSettings();
-
-  //set minimu quality of signal so it ignores AP's under that quality defaults to 8%
-  wifiManager.setMinimumSignalQuality(20);
+  //set minimum quality of signal so it ignores AP's under that quality defaults to 8%
+  //wifiManager.setMinimumSignalQuality(8);
   
   //sets timeout until configuration portal gets turned off useful to make it all retry or go to sleep in seconds
   wifiManager.setTimeout(300);
@@ -259,6 +254,7 @@ void setup() {
   strcpy(mqtt_password, custom_mqtt_password.getValue());
   strcpy(mqtt_clientname, custom_mqtt_clientname.getValue());
   strcpy(mqtt_willtopic, custom_mqtt_willtopic.getValue());
+  strcpy(mqtt_efergytopic, custom_mqtt_efergytopic.getValue());
   strcpy(efergy_voltage, custom_efergy_voltage.getValue());
   efergy_voltage_int = atoi(efergy_voltage);
   
@@ -273,20 +269,18 @@ void setup() {
     json["mqtt_password"] = mqtt_password;
     json["mqtt_clientname"] = mqtt_clientname;
     json["mqtt_willtopic"] = mqtt_willtopic;
+    json["mqtt_efergytopic"] = mqtt_efergytopic;
     json["efergy_voltage"] = efergy_voltage;
     
-
     File configFile = SPIFFS.open("/config.json", "w");
-    if (!configFile) {
-      Serial.println("failed to open config file for writing");
-    }
+    if (!configFile) { Serial.println("failed to open config file for writing");  }
     
     json.printTo(Serial);
     json.printTo(configFile);
     configFile.close();
     //end save
-    Serial.println("Rebooting. Please Wait...");
-    delay(500);
+    Serial.println("\nRebooting. Please Wait...");
+    delay(1000);
     ESP.restart();
     delay(500); //We should NEVER get here
     Serial.println("REBOOT FAILED");
@@ -500,7 +494,7 @@ void loop() {
       i = 1;
       while ( i < MAXTX ) {
         if (TX_id[i] > 0 ) {   
-          if ( (  TX_age[i] + ( (unsigned long)TX_interval[i] * 1010 ) ) < millis() ) {  //If we miss 1 transmission note it
+          if ( (  TX_age[i] + ( (unsigned long)TX_interval[i] * 1010 ) ) < millis() ) {  //If we miss a transmission note it
             TransmitterID = TX_id[i];
             TX_age[i] = millis();
             TX_lost[i]++;
@@ -509,8 +503,10 @@ void loop() {
             Serial.print(",\"LOST\":");
             Serial.print(TX_lost[i]);
             Serial.println("}");
-            MQTT_Pub("Watt","");      //Clear Retained message
-            if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
+            if (MQTT_Publish_LOST) { //If we publish a NULL for Lost Messages
+              MQTT_Pub("Watt","");      //Clear Retained message
+              if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
+            }
           }
         }
         i++;
@@ -611,7 +607,7 @@ void Serial_BitTimes(int z) {
 
 void MQTT_Pub(char Topic[], unsigned long value) {  //MQTT Publish
   char topic[32];
-  sprintf(topic,"%s/%lu/%s",mqtt_clientname,TransmitterID,Topic);
+  sprintf(topic,"%s/%lu/%s",mqtt_efergytopic,TransmitterID,Topic);
   char buf[12];
   sprintf(buf,"%lu",value);
   if ( MQTT_Connected == true ) {
@@ -622,7 +618,7 @@ void MQTT_Pub(char Topic[], unsigned long value) {  //MQTT Publish
 
 void MQTT_Pub(char Topic[], int value) {  //MQTT Publish
   char topic[32];
-  sprintf(topic,"%s/%lu/%s",mqtt_clientname,TransmitterID,Topic);
+  sprintf(topic,"%s/%lu/%s",mqtt_efergytopic,TransmitterID,Topic);
   char buf[8];
   sprintf(buf,"%d",value);
   if ( MQTT_Connected == true ) {
@@ -633,7 +629,7 @@ void MQTT_Pub(char Topic[], int value) {  //MQTT Publish
 
 void MQTT_Pub(char Topic[], bool value) {  //MQTT Publish
   char topic[32];
-  sprintf(topic,"%s/%lu/%s",mqtt_clientname,TransmitterID,Topic);
+  sprintf(topic,"%s/%lu/%s",mqtt_efergytopic,TransmitterID,Topic);
   if ( MQTT_Connected == true ) { 
     if ( value ) { MQTTclient.publish(topic,"true",true); } else { MQTTclient.publish(topic,"false",true); }
   }
@@ -641,7 +637,7 @@ void MQTT_Pub(char Topic[], bool value) {  //MQTT Publish
 
 void MQTT_Pub(char Topic[], char Value[]) {  //MQTT Publish
   char topic[32];
-  sprintf(topic,"%s/%lu/%s",mqtt_clientname,TransmitterID,Topic);
+  sprintf(topic,"%s/%lu/%s",mqtt_efergytopic,TransmitterID,Topic);
   if ( MQTT_Connected == true ) {
     MQTTclient.publish(topic,Value,true);
   }
@@ -677,7 +673,7 @@ void mqtt_pubsubclient_reconnect() {
         MQTTclient.publish(mqtt_willtopic,"true");    // Once connected, publish an announcement...
         MQTTclient.loop();
         yield();
-        sprintf(buf1,"%s/Voltage",mqtt_clientname);
+        sprintf(buf1,"%s/Voltage",mqtt_efergytopic);
         MQTTclient.publish(buf1,efergy_voltage);
         MQTTclient.loop();
         sprintf(buf1,"%s/ESP8266_VCC",mqtt_clientname);
@@ -705,13 +701,14 @@ void mqtt_pubsubclient_reconnect() {
           case 5: Serial.print(F("CONNECT_UNAUTHORIZED")); break;
         }
         Serial.println("\"}");
-        Serial.println("Waiting 60 seconds to retry connection");
-        MQTT_retry = millis() + 60000; // Wait 30 seconds before retrying
+        Serial.println("Waiting 20 seconds to retry connection");
+        MQTT_retry = millis() + 20000; // Wait 20 seconds before retrying
       }
     }
   }
 }
 
+//Reset Variables in the Transmitter information arrays
 void RESET_TX_DB() {
   for (i = 0; i < MAXTX; i++) { //Initialise Transmitter ID array
     TX_id[i] = 0;
@@ -721,7 +718,7 @@ void RESET_TX_DB() {
   }
 }
 
-
+//Publish our software version over MQTT
 #define MQTT_Pub_VERSION() \
     sprintf(buf1,"%s/VERSION",mqtt_clientname); \
     sprintf(buf2,"%d.%d",VERSION_MAJOR,VERSION_MINOR); \
@@ -730,7 +727,7 @@ void RESET_TX_DB() {
   
 
 
-// Callback function
+// Callback function for MQTT Subscription on '%clientname%'
 void callback(char* topic, byte* payload, unsigned int length) {
   //Convert Payload to Null terminated Array read to convert to String
   memset (mqtt_subscribe_buff, 0, sizeof(mqtt_subscribe_buff));
@@ -786,6 +783,21 @@ void callback(char* topic, byte* payload, unsigned int length) {
       Serial.print("{\"VOLTAGE\":");
       Serial.print(efergy_voltage_int);
       Serial.println("}");
+      UpdateConfig(); //Update the permanent Configuration file
+    }
+  }
+
+
+  //SET MQTT Server
+  sprintf(buf1,"%s/CONFIG/%s",mqtt_clientname,"MQTTSERVER");
+  if ( strcmp(topic,buf1) == 0 ) {
+    int newvoltage = atoi(mqtt_subscribe_buff);
+    if (newvoltage > 5 && newvoltage < 999 ) {
+      efergy_voltage_int = newvoltage;
+      Serial.print("{\"VOLTAGE\":");
+      Serial.print(efergy_voltage_int);
+      Serial.println("}");
+      UpdateConfig(); //Update the permanent Configuration file
     }
   }
 
@@ -811,6 +823,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   yield(); 
 }
 
+//Used for Accurate Clock cycle timing for receiving the bits from the Efergy Receiver
 #define RSR_CCOUNT(r)     __asm__ __volatile__("rsr %0,ccount":"=a" (r))
 static inline uint32_t get_ccount(void)
 {
@@ -837,4 +850,24 @@ unsigned long Efergy_pulseIn(uint8_t pin, uint8_t state, unsigned long timeout)
     return clockCyclesToMicroseconds(get_ccount() - pulse_start_cycle_count);
 }
 
+
+//Permanently Update our configuration file parameters
+void UpdateConfig() {
+  DynamicJsonBuffer jsonBuffer;
+  JsonObject& json = jsonBuffer.createObject();
+  //json["mqtt_server"] = mqtt_server;
+  //json["mqtt_port"] = mqtt_port;
+  //json["mqtt_username"] = mqtt_username;
+  //json["mqtt_password"] = mqtt_password;
+  //json["mqtt_clientname"] = mqtt_clientname;
+  //json["mqtt_willtopic"] = mqtt_willtopic;
+  //json["mqtt_efergytopic"] = mqtt_efergytopic;
+  json["efergy_voltage"] = efergy_voltage_int;
+  File configFile = SPIFFS.open("/config.json", "w");
+  if (!configFile) { Serial.println("failed to open config file for writing");  }
+  Serial.println("Writing Updated Configuration");
+  json.printTo(Serial);
+  json.printTo(configFile);
+  configFile.close();
+}
 

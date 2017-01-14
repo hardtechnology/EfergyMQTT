@@ -581,6 +581,7 @@ unsigned int GetTXarrayID(unsigned long TransmitterID, unsigned char TXtype) {
         if ( TXfiltercheck(TransmitterID) ) {
           MQTT_Pub("Online",true);
           MQTT_Pub("Type",TXtype);
+          MQTT_Pub("Voltage",efergy_voltage);
         }
       }
       w++;
@@ -689,17 +690,14 @@ void mqtt_pubsubclient_reconnect() {
         RESET_TX_DB();
         Serial.println("{\"MQTT\":\"CONNECTED\"}");
         
-        MQTTclient.publish(mqtt_willtopic,"true");    // Once connected, publish an announcement...
+        MQTTclient.publish(mqtt_willtopic,"true",true);    // Once connected, publish an announcement...
         MQTTclient.loop();
         yield();
-        sprintf(buf1,"%s/Voltage",mqtt_efergytopic);
-        MQTTclient.publish(buf1,efergy_voltage);
-        MQTTclient.loop();
-        sprintf(buf1,"%s/ESP8266_VCC",mqtt_clientname);
-        sprintf(buf2,"%d.%d",VCC_V,VCC_mV);
-        MQTTclient.publish(buf1,buf2);
-        MQTTclient.loop();
-        yield();
+        //sprintf(buf1,"%s/ESP8266_VCC",mqtt_clientname);
+        //sprintf(buf2,"%d.%d",VCC_V,VCC_mV);
+        //MQTTclient.publish(buf1,buf2,true);
+        //MQTTclient.loop();
+        //yield();
         sprintf(buf1,"%s/CONFIG/#",mqtt_clientname);
         MQTTclient.subscribe(buf1);
         MQTTclient.loop();

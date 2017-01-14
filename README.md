@@ -17,15 +17,15 @@ The Efergy Power meters run at 433MHz (in AU) with FSK protocol. Using the DATA_
 
 
 # Programming the ESP8266 Module
-This code is creating in the Arudino IDE version 1.6.9. You will need to seperately install the required libraries and your ESP8266 board configuration.
+This code is creating in the Arudino IDE version 1.8.1. You will need to seperately install the required libraries and your ESP8266 board configuration.
 
 We need the 'ESP8266 Community' boards to be added - follow this: https://learn.sparkfun.com/tutorials/esp8266-thing-hookup-guide/installing-the-esp8266-arduino-addon
 
 Required Libraries (add them through the Arduino Libaries Manager)
-* WiFiManager
-* ArduinoJson
-* PubsubClient
-
+* ArduinoJSON 5.8.0
+* ESP8266 1.0.0
+* WiFiManager 0.12.0
+* PubSubClient 2.6.0
 
 # Configuration
 Once programmed, it will boot up in AP mode. This may take 1-2 minutes upon first boot as the file system is being prepared. You can then connect to the 'EfergyMQTT' access point with passphrase 'TTQMygrefE'. Once connected, browse to a random HTTP website and you will be redirected to the configuration page. File out your MQTT server information and the voltage of your power supply and click Save. The ESP will then restart and connect to your configured WiFi and MQTT Server.

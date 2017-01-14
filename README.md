@@ -59,3 +59,12 @@ The following MQTT Topics can be used to control the module:
 %MQTTClientname%/CONFIG/VERSION
 * Value: n/a - will reply on %MQTTClientname%/VERSION with the current Software Voltage
 
+%MQTTClientname%/CONFIG/FILTER/TYPE
+* Value: 'blacklist', 'whitelist' or 'disabled' - Transmitter ID's added to filter will act in this way
+* NOTE: All received Transmitters will still show on Serial line for debugging.
+
+%MQTTClientname%/CONFIG/FILTER/ADD
+* Value: Transmitter ID number to add to Filter list
+
+%MQTTClientname%/CONFIG/FILTER/REMOVE
+* Value: Transmitter ID number to add to Filter list

@@ -118,7 +118,8 @@ void setup() {
 
   //clean FS, for testing
   //SPIFFS.format();
-
+  //FACTORYDEFAULT();
+  
   //read configuration from FS json
   Serial.print("Mounting FS...");
   delay(50);
@@ -192,7 +193,7 @@ void setup() {
   }
   //end read
 
-    WiFiManagerParameter custom_text_MQTT1("MQTT Server Configuration<br>");
+  WiFiManagerParameter custom_text_MQTT1("MQTT Server Configuration<br>");
   WiFiManagerParameter custom_mqtt_server("Server", "mqtt server", mqtt_server, sizeof(mqtt_server));
   WiFiManagerParameter custom_mqtt_port("Port", "mqtt port", mqtt_port, sizeof(mqtt_port));
   WiFiManagerParameter custom_mqtt_username("Username", "mqtt username", mqtt_username, sizeof(mqtt_username));
@@ -1049,4 +1050,16 @@ bool TXfiltercheck(unsigned long TXID) {
   return match;
 }
 
+void FACTORYDEFAULT() {
+  DynamicJsonBuffer jsonBuffer;
+  JsonObject& FACTDEFAULT = jsonBuffer.parseObject("//"); //Decode the config file into JSON config
 
+  File configFile1 = SPIFFS.open("/config.json", "w"); //Open the config file
+  FACTDEFAULT.printTo(configFile1);
+  configFile1.close();
+  File configFile2 = SPIFFS.open("/efergy.json", "w"); //Open the config file
+  FACTDEFAULT.printTo(configFile2);
+  configFile2.close();
+  WiFiManager wifiManager;
+  wifiManager.resetSettings();
+}

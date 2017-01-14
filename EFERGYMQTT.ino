@@ -1,5 +1,5 @@
 //DATA Out from Receiver in pin D3 (remember 3.3v!!)
-//Version 7.0 - 18th December 2016
+//Version 8.0 - 14th January 2017
 //Based on code from:
 //http://rtlsdr-dongle.blogspot.com.au/2013/11/finally-complete-working-prototype-of.html
 //http://electrohome.pbworks.com/w/page/34379858/Efergy%20Elite%20Wireless%20Meter%20Hack
@@ -22,8 +22,8 @@
 #include "wiring_private.h"       //Required for our version of PulseIn
 #include "pins_arduino.h"         //Required for our version of PulseIn
 
-#define VERSION_MAJOR 7
-#define VERSION_MINOR 5
+#define VERSION_MAJOR 8
+#define VERSION_MINOR 0
 
 #define DEBUG 0
 bool MQTT_Publish_mA = false;
@@ -37,8 +37,8 @@ char mqtt_password[60] = "";
 char mqtt_clientname[60] = "EfergyMQTT";
 char mqtt_willtopic[60] = "EfergyMQTT/Online";
 char mqtt_efergytopic[60] = "EfergyMQTT";
-char efergy_blacklist[128] = "{\"blacklist\":[]}";
-char efergy_whitelist[128] = "{\"whitelist\":[]}";
+unsigned long efergy_filter_list[50];
+int efergy_filter_type = 0;
 char efergy_voltage[8] = "230"; //Set default Voltage for our Wattage measurements
 int efergy_voltage_int = atoi(efergy_voltage);
 char buf1[40]; //Temporary buffers for charactor concatenating, etc...
@@ -100,6 +100,7 @@ unsigned int TX_link[MAXTX];       //Link Bit reference
 unsigned int TX_lost[MAXTX];       //Number of packets lost to trigger OFFLINE
 unsigned long MQTT_retry = 0;      //Stores time between MQTT reconnections
 bool MQTT_Connected = false;
+bool MQTT_TXenabled = true;
 char mqtt_subscribe_buff[100];
 
 //unsigned long bitTimer;
@@ -291,6 +292,9 @@ void setup() {
   MQTTclient.setServer(mqtt_server, atoi(mqtt_port)); //#################Need to Convert Configured IP
   mqtt_pubsubclient_reconnect(); //Make sure we are connected to our MQTT Server
 
+  //Read in Filtering List
+  TXfilterRead();
+
   if (DEBUG) {
     Serial.println("DEBUG=ON - T=Timeout, S=Start, b=bit, o=Rxtimeout, L=loop routine, E=End of Packet");
   }
@@ -365,89 +369,98 @@ void loop() {
     if ( bytecount == 8 && checksumOK(bytearray)) { //Process Received Packet  
       flag = false;
       TransmitterID = (((unsigned int)bytearray[1] * 256) + (unsigned int)bytearray[2]); //Make 16-bit Transmitter ID
-      //Transmitter update JSON
-      TXarrayID = GetTXarrayID(TransmitterID,bytearray[0]); //Get our Array ID for the Transmitter
-      if (TXarrayID) {
-        TX_update[TXarrayID]++;
-        if (TX_update[TXarrayID] > fullupdatepkt) {
-          TX_update[TXarrayID] = 0;
-        }
-        TX_age[TXarrayID] = millis();
-        TX_lost[TXarrayID] = 0;
-        milliamps = ((1000 * ((unsigned long)((bytearray[4] * 256) + (unsigned long)bytearray[5]))) / power2(bytearray[6]));
-        watts = ( milliamps * efergy_voltage_int ) / 1000;
-        Serial.print(F("{\"TX\":"));
-        Serial.print(TransmitterID);
-        Serial.print(F(",\"W\":"));
-        Serial.print(watts);
-        if (MQTT_Publish_mA) {
-          Serial.print(F(",\"mA\":"));
-          Serial.print(milliamps);
-        }
-        if ( watts > 25000 || milliamps > 100000 ) { //If our calculations are out of normal boundaries - log the full data
-          MQTT_RAW(bytearray);
-        }
-        //Transmit Intervals
-        if ( (bytearray[3] & 0x30) == 0x10) { //xx11xxxx = 12 seconds
-          i = 12;
-        } else if ( (bytearray[3] & 0x30) == 0x20) { //xx10xxxx = 18 seconds
-          i = 18;
-        } else if ( (bytearray[3] & 0x30) == 0x00) { //xx00xxxx = 6 seconds
-          i = 6;
-        } else {
-          i = 0;
-        }
-        
-        if ( TX_interval[TXarrayID] != i || TX_update[TXarrayID] == fullupdatepkt) {
-          Serial.print(F(",\"I\":"));
-          Serial.print(i);
-          TX_interval[TXarrayID] = i;
-          MQTT_Pub("Interval",i);
-        }
-        //Print out if the locate(LINK) bit is set on the transmitter - include Interval
-        if ( (bytearray[3] & 0x80) == 0x80 && TX_link[TXarrayID] == false) {
-          Serial.print(F(",\"LINK\":1"));
-          if ( MQTT_Connected == true ) {
-            sprintf(buf1,"%s/Link",mqtt_clientname);
-            sprintf(buf2,"%lu",TransmitterID);
-            MQTTclient.publish(buf1,buf2,true);
+      if (TXfiltercheck(TransmitterID)) {
+        //Transmitter update JSON
+        TXarrayID = GetTXarrayID(TransmitterID,bytearray[0]); //Get our Array ID for the Transmitter
+        if (TXarrayID) {
+          TX_update[TXarrayID]++;
+          if (TX_update[TXarrayID] > fullupdatepkt) {
+            TX_update[TXarrayID] = 0;
           }
-          TX_link[TXarrayID] = true;
-        } else if ( (bytearray[3] & 0x80) == 0x00 ) {
-          TX_link[TXarrayID] = false;
-        }
-        
-        //Check the Battery status of the Transmitter - False means low battery
-        if ( (bytearray[3] & 0x40) == 0x40) {
-          i = 2;  //Battery - 2=ok, 1=bad, 0=unknown
-        } else {
-          i = 1;
-        }
-        
-        if ( TX_battery[TXarrayID] != i || TX_update[TXarrayID] == fullupdatepkt  ) {
-          TX_battery[TXarrayID] = i;
-          if ( i == 2 ) {
-            MQTT_Pub("BattOK",true);
-            Serial.print(F(",\"BOK\":true"));
+          TX_age[TXarrayID] = millis();
+          TX_lost[TXarrayID] = 0;
+          milliamps = ((1000 * ((unsigned long)((bytearray[4] * 256) + (unsigned long)bytearray[5]))) / power2(bytearray[6]));
+          watts = ( milliamps * efergy_voltage_int ) / 1000;
+          Serial.print(F("{\"TX\":"));
+          Serial.print(TransmitterID);
+          Serial.print(F(",\"W\":"));
+          Serial.print(watts);
+          if (MQTT_Publish_mA) {
+            Serial.print(F(",\"mA\":"));
+            Serial.print(milliamps);
+          }
+          if ( watts > 25000 || milliamps > 100000 ) { //If our calculations are out of normal boundaries - log the full data
+            MQTT_RAW(bytearray);
+          }
+          //Transmit Intervals
+          if ( (bytearray[3] & 0x30) == 0x10) { //xx11xxxx = 12 seconds
+            i = 12;
+          } else if ( (bytearray[3] & 0x30) == 0x20) { //xx10xxxx = 18 seconds
+            i = 18;
+          } else if ( (bytearray[3] & 0x30) == 0x00) { //xx00xxxx = 6 seconds
+            i = 6;
           } else {
-            MQTT_Pub("BattOK",false);
-            Serial.print(F(",\"BOK\":false"));
+            i = 0;
           }
+          
+          if ( TX_interval[TXarrayID] != i || TX_update[TXarrayID] == fullupdatepkt ) {
+            Serial.print(F(",\"I\":"));
+            Serial.print(i);
+            TX_interval[TXarrayID] = i;
+            MQTT_Pub("Interval",i);
+          }
+          //Print out if the locate(LINK) bit is set on the transmitter - include Interval
+          if ( (bytearray[3] & 0x80) == 0x80 && TX_link[TXarrayID] == false) {
+            Serial.print(F(",\"LINK\":1"));
+            if ( MQTT_Connected == true ) {
+              sprintf(buf1,"%s/Link",mqtt_clientname);
+              sprintf(buf2,"%lu",TransmitterID);
+              MQTTclient.publish(buf1,buf2,true);
+            }
+            TX_link[TXarrayID] = true;
+          } else if ( (bytearray[3] & 0x80) == 0x00 ) {
+            TX_link[TXarrayID] = false;
+          }
+          
+          //Check the Battery status of the Transmitter - False means low battery
+          if ( (bytearray[3] & 0x40) == 0x40) {
+            i = 2;  //Battery - 2=ok, 1=bad, 0=unknown
+          } else {
+            i = 1;
+          }
+          
+          if ( TX_battery[TXarrayID] != i || TX_update[TXarrayID] == fullupdatepkt ) {
+            TX_battery[TXarrayID] = i;
+            if ( i == 2 ) {
+              MQTT_Pub("BattOK",true);
+              Serial.print(F(",\"BOK\":true"));
+            } else {
+              MQTT_Pub("BattOK",false);
+              Serial.print(F(",\"BOK\":false"));
+            }
+          }
+          
+          //End of JSON Update string
+          Serial.println("}");
+          
+          //Publish Standard MQTT Updates
+          if (MQTT_Publish_mA) {MQTT_Pub("mA",milliamps); }
+          MQTT_Pub("Watt", watts);  
+          
+        } else {
+          //Invalid Transmitter ID - most likely we are overloaded
+          if (DEBUG){Serial.print("INVID");}
+          RESET_PKT();
         }
-        
-        //End of JSON Update string
-        Serial.println("}");
-        
-        //Publish Standard MQTT Updates
-        if (MQTT_Publish_mA) {MQTT_Pub("mA",milliamps); }
-        MQTT_Pub("Watt", watts);
-
-        
+        //end TXarrayID if routine
       } else {
-        //Invalid Transmitter ID - most likely we are overloaded
-        if (DEBUG){Serial.print("INVID");}
-        RESET_PKT();
+          Serial.print(F("{\"TX\":"));
+          Serial.print(TransmitterID);
+          Serial.println(",\"MQTT\":\"filtered\"}");
       }
+
+      
+      
     } else {
       //We failed the Checksum test on an 8 byte Packet
       flag = false;
@@ -479,10 +492,12 @@ void loop() {
               Serial.println("}");
               TransmitterID = TX_id[i];
               TX_id[i] = 0;
-              MQTT_Pub("Online",false); //Mark Transmitter as offline
-              MQTT_Pub("Watt","");      //Clear Retained message
-              if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
-              MQTT_Pub("Interval","");  //Clear Retained message
+              if ( TXfiltercheck(TransmitterID) ) {
+                MQTT_Pub("Online",false); //Mark Transmitter as offline
+                MQTT_Pub("Watt","");      //Clear Retained message
+                if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
+                MQTT_Pub("Interval","");  //Clear Retained message
+              }
             }
           }
           i++;
@@ -504,8 +519,10 @@ void loop() {
             Serial.print(TX_lost[i]);
             Serial.println("}");
             if (MQTT_Publish_LOST) { //If we publish a NULL for Lost Messages
-              MQTT_Pub("Watt","");      //Clear Retained message
-              if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
+              if ( TXfiltercheck(TransmitterID) ) {
+                MQTT_Pub("Watt","");      //Clear Retained message
+                if (MQTT_Publish_mA) {MQTT_Pub("mA",""); }  //Clear Retained message
+              }
             }
           }
         }
@@ -553,7 +570,7 @@ unsigned int GetTXarrayID(unsigned long TransmitterID, unsigned char TXtype) {
         TX_id[w] = TransmitterID;
         TX_age[w] = millis();
         TX_battery[w] = 0;
-        TX_update[w] = 0;
+        TX_update[w] = fullupdatepkt-1;
         TX_lost[w] = 0;
         TX_link[w] = false;
         Serial.print(F("{\"NEW\":"));
@@ -561,8 +578,10 @@ unsigned int GetTXarrayID(unsigned long TransmitterID, unsigned char TXtype) {
         Serial.print(",\"TYPE\":");
         Serial.print(TXtype);
         Serial.println("}");
-        MQTT_Pub("Online",true);
-        MQTT_Pub("Type",TXtype);
+        if ( TXfiltercheck(TransmitterID) ) {
+          MQTT_Pub("Online",true);
+          MQTT_Pub("Type",TXtype);
+        }
       }
       w++;
     }
@@ -814,6 +833,47 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
   }
 
+
+  //Update our Transmitter Filter - ADD
+  sprintf(buf1,"%s/CONFIG/FILTER/%s",mqtt_clientname,"ADD");
+  if ( strcmp(topic,buf1) == 0 ) {
+    TransmitterID = (unsigned long)atoi(mqtt_subscribe_buff);
+    TXfilterUpdate(0,TransmitterID);
+    if (efergy_filter_type == 1 ) {
+      //We are in blacklist mode so remove the MQTT items
+      int TXi = 0;
+      while ( TXi < MAXTX ) {
+        if ( TransmitterID == TX_id[TXi] ) { TX_id[TXi] = 0; } //Clear our Transmitter ID array
+        TXi++;
+      }
+      MQTT_Pub("Online","");
+      MQTT_Pub("Type","");
+      MQTT_Pub("mA","");
+      MQTT_Pub("Type","");
+      MQTT_Pub("BattOK","");
+      MQTT_Pub("Watt","");
+      MQTT_Pub("Interval","");
+      
+    }
+  }
+
+  //Update our Transmitter Filter - REMOVE
+  sprintf(buf1,"%s/CONFIG/FILTER/%s",mqtt_clientname,"REMOVE");
+  if ( strcmp(topic,buf1) == 0 ) {
+    TXfilterUpdate(1,(unsigned long)atoi(mqtt_subscribe_buff));
+  }
+ 
+  //Update our Transmitter Filter - Blacklist or Whitelist mode
+  sprintf(buf1,"%s/CONFIG/FILTER/%s",mqtt_clientname,"TYPE");
+  if ( strcmp(topic,buf1) == 0 ) {
+    if ( strcmp(mqtt_subscribe_buff,"blacklist") == 0 ) { efergy_filter_type = 1; }
+    if ( strcmp(mqtt_subscribe_buff,"whitelist") == 0 ) { efergy_filter_type = 2; }
+    if ( strcmp(mqtt_subscribe_buff,"disabled") == 0 ) { efergy_filter_type = 0; }
+    TXfilterdisplay(); // Display to Serial
+    TXfilterwrite();   // Save to config
+  }
+  
+
   //GET Software Version
   sprintf(buf1,"%s/CONFIG/VERSION",mqtt_clientname);
   if ( strcmp(topic,buf1) == 0 ) {
@@ -870,4 +930,125 @@ void UpdateConfig() {
   json.printTo(configFile);
   configFile.close();
 }
+
+
+bool TXfilterRead() {
+  DynamicJsonBuffer jsonBuffer;
+  efergy_filter_type = 0;
+  int TXi = 0;
+  //Reset efergy_filter_list[]
+  if (SPIFFS.begin()) {
+    if (!SPIFFS.exists("/efergy.json")) { //If there is no curent configuration
+      File configFile = SPIFFS.open("/efergy.json", "w");
+      if (!configFile) { Serial.println("failed to open config file for writing");  }
+      Serial.println("Writing Default Filter Configuration");
+      char TXfilterdefault[] = "{\"type\":1,\"list\":[]}";
+      JsonObject& TXfilter = jsonBuffer.parseObject(TXfilterdefault); //Decode the config file into JSON config
+      TXfilter.printTo(configFile);
+      configFile.close();    
+    }
+    File configFile = SPIFFS.open("/efergy.json", "r"); //Open the config file
+    if (configFile) {
+      size_t size = configFile.size();
+      std::unique_ptr<char[]> buf(new char[size]);
+      configFile.readBytes(buf.get(), size); //Save contents of config file into buf
+      JsonObject& TXfilter = jsonBuffer.parseObject(buf.get()); //Decode the config file into JSON config
+      if (TXfilter.success()) {
+        if ( TXfilter.containsKey("type") && TXfilter.containsKey("list") ) {
+          //Read in the transmitter white/blacklist into our array
+          TXi = 0;
+          while ( TXfilter["list"][TXi] > 0 ) {
+            efergy_filter_list[TXi] = TXfilter["list"][TXi];
+            TXi++;
+          }
+          efergy_filter_list[TXi] = 0;
+          
+          JsonArray& efergy_filter_list = TXfilter["list"].asArray();
+          efergy_filter_type = (int)TXfilter["type"]; //Copy our type (1 = Blacklist, 2 = Whitelist)
+        }
+      } else {
+        Serial.println("failed to load json config");
+      }  
+    }  
+  } else {
+    Serial.println("failed to mount FS");
+  }
+  //end read
+  
+  TXfilterdisplay();
+}
+
+//Update our Array
+void TXfilterUpdate (bool task, unsigned long TXID) {
+  int TXi = 0;
+  bool TXtrim = false;
+  while ( efergy_filter_list[TXi] > 0 ) {
+    if (task) { //Remove is true
+      if ( efergy_filter_list[TXi] == TXID ) {
+        efergy_filter_list[TXi] = 0;
+        TXtrim = true;
+      }
+      //If we have removed a transmitter - trim the array so we don't have whitespace
+      if ( TXtrim ) { efergy_filter_list[TXi] = efergy_filter_list[TXi+1];
+      }
+    }      
+    TXi++;
+  }
+  if (!task) { efergy_filter_list[TXi] = TXID;  } //Add if false
+  TXfilterdisplay();
+  TXfilterwrite();
+}
+
+//Write configuration to file permanently
+void TXfilterwrite() {
+  DynamicJsonBuffer jsonBuffer;
+  JsonObject& TXfilter = jsonBuffer.parseObject("{}"); //Decode the config file into JSON config
+  TXfilter["type"] = efergy_filter_type;
+  int TXi = 0;
+  JsonArray& list = TXfilter.createNestedArray("list");
+  while ( efergy_filter_list[TXi] > 0 ) {
+    list.add(efergy_filter_list[TXi]);
+    TXi++;
+  }
+  File configFile = SPIFFS.open("/efergy.json", "w"); //Open the config file
+  TXfilter.printTo(configFile);
+  if (DEBUG) { 
+    Serial.print("Filter List Saved: ");
+    TXfilter.printTo(Serial);
+    Serial.println("");
+  }
+  configFile.close();
+  
+}
+
+void TXfilterdisplay() {
+  Serial.print("Efergy filter is in ");
+  if (efergy_filter_type == 1 ) { Serial.print("Blacklist"); } else if (efergy_filter_type == 2 ) { Serial.print("Whitelist"); } else { Serial.print("Disabled"); }
+  Serial.print(" Mode. TX in List: [");
+  int TXi = 0;
+  while ( efergy_filter_list[TXi] > 0 ) {
+    if ( TXi > 0 ) { Serial.print(","); }
+    Serial.print(efergy_filter_list[TXi]);
+    TXi++;
+  }
+  if ( TXi == 0 ) { Serial.print("NONE"); }
+  Serial.println("]");
+}
+
+bool TXfiltercheck(unsigned long TXID) {
+  int TXi = 0;
+  bool match = true; //If match is true then we want to process the transmitter
+  if ( efergy_filter_type > 0 ) { //If type is non-zero we are enabled
+    if ( efergy_filter_type == 2 ) { match = false; } //We are in Whitelist mode - default = NO match
+      while ( efergy_filter_list[TXi] > 0 ) {
+        if ( efergy_filter_list[TXi] == TXID ) {
+          if ( efergy_filter_type == 1 ) { match = false; } //We are in Blacklist mode and we matched        
+          if ( efergy_filter_type == 2 ) { match = true; } //We are in Whitelist mode and we matched        
+        }
+        TXi++;
+      }   
+  }
+  return match;
+}
+
 

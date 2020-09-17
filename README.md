@@ -1,4 +1,4 @@
-This Library is no longer being developed - see the new Arduino Library (https://github.com/hardtechnology/effergy_v2)
+This code is no longer being developed - see the new Arduino Library (https://github.com/hardtechnology/efergy_v2)
 -----
 
 # EfergyMQTT

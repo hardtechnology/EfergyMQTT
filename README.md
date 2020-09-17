@@ -1,3 +1,6 @@
+This Library is no longer being developed - see the new Arduino Library (https://github.com/hardtechnology/effergy_v2)
+-----
+
 # EfergyMQTT
 Efergy MQTT is a simple Efergy Data protocol to MQTT IoT code base designed to run on the ESP8266
 
